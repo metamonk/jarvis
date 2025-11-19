@@ -169,7 +169,44 @@ npx cdk synth  # Verify stack compiles
 
 ## Deployment
 
-### AWS Infrastructure Deployment
+### Automated CI/CD (Recommended)
+
+The project uses GitHub Actions for automated deployment to AWS with secure OIDC authentication.
+
+**Quick Setup** (5 minutes):
+```bash
+# 1. Run the setup script
+cd .github/workflows
+./setup-aws-oidc.sh
+
+# 2. Add GitHub secrets (values from script output):
+#    - AWS_ACCOUNT_ID
+#    - AWS_ROLE_ARN
+
+# 3. Create 'production' environment in GitHub
+
+# 4. Bootstrap CDK
+cd ../../infrastructure
+npx cdk bootstrap
+
+# 5. Push to main branch - automatic deployment!
+git push origin main
+```
+
+**Features:**
+- Automated testing on every PR
+- Secure AWS authentication (no stored credentials)
+- Automated deployment to AWS on push to main/master
+- Rollback support via CloudFormation
+
+**Documentation:**
+- **Quick Start**: `.github/workflows/QUICKSTART.md`
+- **Full Guide**: `CICD.md` (comprehensive documentation)
+- **Setup Details**: `.github/workflows/README.md`
+
+### Manual Deployment (Alternative)
+
+#### AWS Infrastructure Deployment
 
 ```bash
 cd infrastructure
@@ -190,7 +227,7 @@ cdk deploy
 # - Application Load Balancer
 ```
 
-### Backend Deployment
+#### Backend Deployment
 
 Backend is deployed via Docker to ECS Fargate:
 ```bash
@@ -204,7 +241,7 @@ docker tag jarvis-backend:latest ACCOUNT.dkr.ecr.REGION.amazonaws.com/jarvis-bac
 docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/jarvis-backend:latest
 ```
 
-### Frontend Deployment
+#### Frontend Deployment
 
 Frontend is deployed to S3 + CloudFront:
 ```bash
