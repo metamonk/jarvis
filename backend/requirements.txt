@@ -1,0 +1,19 @@
+# Pipecat framework
+pipecat-ai>=0.0.30
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+
+# AI services (Pipecat will use these)
+openai>=1.3.0
+
+# Data & Tools
+pinecone-client>=3.0.0
+httpx>=0.25.0
+
+# Utilities
+python-dotenv>=1.0.0
+loguru>=0.7.0
+pydantic>=2.5.0

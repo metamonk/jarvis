@@ -26,9 +26,25 @@ node_modules/
 
 
 scira/
-.taskmaster/
 .archive/
-
-.mcp.json
-
 .claude/
+
+# Task Master - only ignore state and reports, not tasks/docs
+.taskmaster/
+.taskmaster/state.json
+.taskmaster/reports/
+
+# Python
+backend/venv/
+backend/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+
+# Build outputs
+dist/
+build/
+cdk.out/
+frontend/dist/
