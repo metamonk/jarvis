@@ -25,6 +25,8 @@ node_modules/
 .DS_Store
 
 
-/scira
-/.taskmaster
-/.archive
+scira/
+.taskmaster/
+.archive/
+
+.mcp.json
