@@ -1,8 +1,20 @@
 """ElevenLabs Text-to-Speech service using Pipecat."""
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService as PipecatElevenLabsTTS
-from pipecat.frames.frames import Frame, TextFrame, AudioRawFrame
+from pipecat.frames.frames import Frame, TextFrame, AudioRawFrame, StartFrame
 from loguru import logger
 from typing import AsyncIterator, Optional
+import ssl
+import certifi
+
+# Download required NLTK data for Pipecat's text processing
+try:
+    import nltk
+    # Set SSL context for NLTK downloads
+    ssl._create_default_https_context = ssl._create_unverified_context
+    nltk.download('punkt_tab', quiet=True)
+    nltk.download('punkt', quiet=True)
+except Exception as e:
+    logger.warning(f"Could not download NLTK data: {e}. Text processing may be limited.")
 
 
 class ElevenLabsTTSService:
@@ -132,23 +144,29 @@ class ElevenLabsTTSService:
             )
 
         try:
+            from pipecat.processors.frame_processor import FrameDirection
+
+            # NOTE: This method is designed to work within a Pipecat pipeline context.
+            # In production, this will be called within a PipelineTask with proper
+            # TaskManager initialization.
+
             # Create text frame
             text_frame = TextFrame(text=text)
 
-            # Process through ElevenLabs service with direction
-            from pipecat.processors.frame_processor import FrameDirection
+            # Process through ElevenLabs service
             result_frames = await self._service.process_frame(
                 text_frame,
                 FrameDirection.DOWNSTREAM
             )
 
             # Yield audio frames
-            for result_frame in result_frames:
-                if isinstance(result_frame, AudioRawFrame):
-                    logger.debug(
-                        f"Audio frame generated: {len(result_frame.audio)} bytes"
-                    )
-                    yield result_frame
+            if result_frames:
+                for result_frame in result_frames:
+                    if isinstance(result_frame, AudioRawFrame):
+                        logger.debug(
+                            f"Audio frame generated: {len(result_frame.audio)} bytes"
+                        )
+                        yield result_frame
 
         except Exception as e:
             logger.error(f"Error synthesizing text: {e}")

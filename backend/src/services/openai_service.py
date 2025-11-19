@@ -4,7 +4,9 @@ from pipecat.frames.frames import (
     Frame,
     LLMMessagesFrame,
     TextFrame,
-    LLMFullResponseEndFrame
+    LLMFullResponseEndFrame,
+    StartFrame,
+    LLMTextFrame
 )
 from pipecat.processors.aggregators.llm_response import (
     LLMAssistantResponseAggregator,
@@ -128,16 +130,25 @@ class OpenAILLMService:
             messages = self._conversation_history
 
         try:
+            from pipecat.processors.frame_processor import FrameDirection
+
+            # NOTE: This method is designed to work within a Pipecat pipeline context.
+            # In production, this will be called within a PipelineTask with proper
+            # TaskManager initialization.
+
             # Create LLM messages frame
             messages_frame = LLMMessagesFrame(messages=messages)
 
-            # Process through OpenAI service with direction
-            from pipecat.processors.frame_processor import FrameDirection
-            async for frame in self._service.process_frame(
+            # Process through OpenAI service
+            result_frames = await self._service.process_frame(
                 messages_frame,
                 FrameDirection.DOWNSTREAM
-            ):
-                yield frame
+            )
+
+            # Yield frames from the result
+            if result_frames:
+                for frame in result_frames:
+                    yield frame
 
         except Exception as e:
             logger.error(f"Error processing messages: {e}")
@@ -157,7 +168,8 @@ class OpenAILLMService:
 
         response_text = ""
         async for frame in self.process_messages():
-            if isinstance(frame, TextFrame):
+            # Handle both TextFrame and LLMTextFrame
+            if isinstance(frame, (TextFrame, LLMTextFrame)):
                 response_text += frame.text
             elif isinstance(frame, LLMFullResponseEndFrame):
                 # End of response
