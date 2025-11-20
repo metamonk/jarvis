@@ -38,9 +38,9 @@ interface WebSocketMessage {
 const AUDIO_CONFIG = {
   sampleRate: 16000, // 16kHz as expected by backend
   channelCount: 1, // Mono
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
+  echoCancellation: false, // Disable to prevent audio suppression
+  noiseSuppression: false, // Disable to prevent zeroing out speech
+  autoGainControl: false, // Disable to maintain natural volume
 };
 
 // WebSocket configuration
@@ -76,7 +76,7 @@ export interface UseVoiceActivityReturn {
  */
 export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoiceActivityReturn {
   const {
-    wsUrl = `ws://${window.location.hostname}:8000/ws`,
+    wsUrl = `ws://${window.location.hostname}:8001/ws`,
     autoConnect = false,
     onReady,
     onError,
@@ -99,6 +99,11 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
   const reconnectTimeoutRef = useRef<number | null>(null);
   const pingIntervalRef = useRef<number | null>(null);
   const isRecordingRef = useRef(false); // Ref to avoid closure issues in onaudioprocess
+
+  // Audio queue management for smooth playback
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const isPlayingRef = useRef(false);
+  const nextStartTimeRef = useRef(0);
 
   /**
    * Clear error state
@@ -162,25 +167,83 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
   }, []);
 
   /**
+   * Clear audio queue and reset playback state
+   */
+  const clearAudioQueue = useCallback(() => {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    nextStartTimeRef.current = 0;
+  }, []);
+
+  /**
    * Initialize audio context
    */
-  const initAudioContext = useCallback(() => {
+  const initAudioContext = useCallback(async () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new AudioContext({ sampleRate: AUDIO_CONFIG.sampleRate });
     }
+
+    // Ensure AudioContext is running (not suspended)
+    if (audioContextRef.current.state === 'suspended') {
+      console.log('[VoiceActivity] Resuming suspended AudioContext...');
+      await audioContextRef.current.resume();
+    }
+
+    console.log('[VoiceActivity] AudioContext state:', audioContextRef.current.state);
     return audioContextRef.current;
   }, []);
 
   /**
-   * Play received audio (raw PCM 16-bit)
+   * Process and queue audio chunks for smooth playback
+   */
+  const processAudioQueue = useCallback(() => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext || audioQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      setState('ready');
+      return;
+    }
+
+    // Get next chunk from queue
+    const audioBuffer = audioQueueRef.current.shift()!;
+
+    // Create source and schedule it
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+
+    const currentTime = audioContext.currentTime;
+    const startTime = Math.max(currentTime, nextStartTimeRef.current);
+
+    source.onended = () => {
+      // Process next chunk in queue
+      if (audioQueueRef.current.length > 0) {
+        processAudioQueue();
+      } else {
+        isPlayingRef.current = false;
+        setState('ready');
+        console.log('[VoiceActivity] Audio queue empty, playback complete');
+      }
+    };
+
+    source.start(startTime);
+    nextStartTimeRef.current = startTime + audioBuffer.duration;
+
+    console.log('[VoiceActivity] Scheduled audio chunk', {
+      startTime: startTime - currentTime,
+      duration: audioBuffer.duration,
+      queueLength: audioQueueRef.current.length
+    });
+  }, []);
+
+  /**
+   * Play received audio (raw PCM 16-bit) with proper queueing
    */
   const playAudio = useCallback(async (audioData: ArrayBuffer) => {
-    // Debug hook: log every time we receive audio from the backend
-    console.log('[VoiceActivity] Received audio from backend:', audioData.byteLength, 'bytes');
+    console.log('[VoiceActivity] Received audio chunk:', audioData.byteLength, 'bytes');
 
     try {
-      const audioContext = initAudioContext();
-      console.log('[VoiceActivity] AudioContext state:', audioContext.state);
+      const audioContext = await initAudioContext();
 
       // Convert PCM 16-bit to Float32Array
       const pcmData = new Int16Array(audioData);
@@ -201,33 +264,23 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
       // Copy data to buffer
       audioBuffer.copyToChannel(floatData, 0);
 
-      console.log('[VoiceActivity] Created AudioBuffer', {
-        length: audioBuffer.length,
-        duration: audioBuffer.duration,
-        sampleRate: audioBuffer.sampleRate,
-      });
+      // Add to queue
+      audioQueueRef.current.push(audioBuffer);
 
-      // Create source and play
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContext.destination);
+      // If not currently playing, start playback
+      if (!isPlayingRef.current) {
+        isPlayingRef.current = true;
+        setState('speaking');
+        nextStartTimeRef.current = audioContext.currentTime + 0.05; // Small initial delay
+        processAudioQueue();
+      }
 
-      // Update state to speaking
-      setState('speaking');
-
-      source.onended = () => {
-        console.log('[VoiceActivity] Playback finished');
-        setState('ready');
-      };
-
-      source.start(0);
-      console.log('[VoiceActivity] Playback started');
       onAudioReceived?.(audioData);
     } catch (err) {
-      console.error('[VoiceActivity] Failed to play audio', err);
-      handleError(new Error(`Failed to play audio: ${err}`));
+      console.error('[VoiceActivity] Failed to process audio', err);
+      handleError(new Error(`Failed to process audio: ${err}`));
     }
-  }, [initAudioContext, onAudioReceived, handleError]);
+  }, [initAudioContext, processAudioQueue, onAudioReceived, handleError]);
 
   /**
    * Handle WebSocket messages
@@ -351,6 +404,9 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
     // Clear ping interval
     clearPingInterval();
 
+    // Clear audio queue
+    clearAudioQueue();
+
     // Stop recording if active
     if (isRecording) {
       stopRecording();
@@ -365,7 +421,7 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
     setIsConnected(false);
     setState('idle');
     reconnectAttemptsRef.current = 0;
-  }, [isRecording, clearPingInterval]);
+  }, [isRecording, clearPingInterval, clearAudioQueue]);
 
   /**
    * Convert Float32Array to Int16Array (PCM 16-bit)
@@ -374,8 +430,25 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
     const buffer = new ArrayBuffer(float32Array.length * 2);
     const view = new DataView(buffer);
 
+    // Calculate max amplitude to determine if gain is needed
+    let maxAmplitude = 0;
     for (let i = 0; i < float32Array.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      maxAmplitude = Math.max(maxAmplitude, Math.abs(float32Array[i]));
+    }
+
+    // Dynamic amplification: only amplify if signal is weak
+    let amplification = 1.0;
+    if (maxAmplitude > 0 && maxAmplitude < 0.1) {
+      // Scale to reach ~50% of maximum (0.5) instead of clipping at 100%
+      amplification = Math.min(0.5 / maxAmplitude, 4.0); // Cap at 4x to prevent extreme amplification
+      console.log(`[VoiceActivity] Dynamic amplification: ${amplification.toFixed(2)}x for max amplitude ${maxAmplitude.toFixed(4)}`);
+    }
+
+    for (let i = 0; i < float32Array.length; i++) {
+      // Amplify the signal with dynamic gain
+      const amplified = float32Array[i] * amplification;
+      // Clamp to [-1, 1] range
+      const s = Math.max(-1, Math.min(1, amplified));
       view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     }
 
@@ -405,8 +478,17 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
 
       mediaStreamRef.current = stream;
 
+      // Verify stream is active
+      console.log('[VoiceActivity] Stream active:', stream.active);
+      console.log('[VoiceActivity] Audio tracks:', stream.getAudioTracks());
+      stream.getAudioTracks().forEach(track => {
+        console.log('[VoiceActivity] Track enabled:', track.enabled);
+        console.log('[VoiceActivity] Track state:', track.readyState);
+        console.log('[VoiceActivity] Track settings:', track.getSettings());
+      });
+
       // Initialize audio context
-      const audioContext = initAudioContext();
+      const audioContext = await initAudioContext();
 
       // Create audio source from stream
       const source = audioContext.createMediaStreamSource(stream);
@@ -433,32 +515,64 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
         // capturing silence from the browser.
         let min = 1.0;
         let max = -1.0;
+        let hasSignal = false;
+
         for (let i = 0; i < inputData.length; i++) {
           const v = inputData[i];
           if (v < min) min = v;
           if (v > max) max = v;
+          // Check if there's actual audio signal (not just noise floor)
+          if (Math.abs(v) > 0.001) {
+            hasSignal = true;
+          }
         }
 
-        // Convert Float32 to PCM 16-bit
+        // Skip pure silence to avoid confusing Deepgram
+        if (!hasSignal) {
+          console.warn('[VoiceActivity] Skipping silent audio chunk (all values < 0.001)');
+          return;
+        }
+
+        // Convert Float32 to PCM 16-bit (with dynamic amplification)
         const pcmData = floatTo16BitPCM(inputData);
 
-        // Log first chunk to verify audio is being sent
-        if (!hasLoggedFirstChunk) {
-          console.log(
-            `Sending audio chunk: ${pcmData.byteLength} bytes (mic min=${min.toFixed(
-              6,
-            )}, max=${max.toFixed(6)})`,
-          );
-          hasLoggedFirstChunk = true;
+        // Validate PCM data isn't all zeros after conversion
+        const pcmView = new Int16Array(pcmData);
+        let pcmHasSignal = false;
+        let pcmMax = 0;
+        for (let i = 0; i < Math.min(100, pcmView.length); i++) {
+          const absVal = Math.abs(pcmView[i]);
+          if (absVal > 10) {  // Threshold above noise floor for 16-bit
+            pcmHasSignal = true;
+          }
+          pcmMax = Math.max(pcmMax, absVal);
         }
 
-        // Send chunk to server immediately
-        sendAudio(pcmData);
+        // Log first chunk and periodic updates
+        if (!hasLoggedFirstChunk || Math.random() < 0.1) {  // Log 10% of chunks
+          console.log(
+            `[VoiceActivity] Audio stats: ${pcmData.byteLength} bytes, ` +
+            `float32 range: [${min.toFixed(6)}, ${max.toFixed(6)}], ` +
+            `PCM max: ${pcmMax}/32768, has signal: ${pcmHasSignal}`,
+          );
+          if (!hasLoggedFirstChunk) hasLoggedFirstChunk = true;
+        }
+
+        // Only send if PCM data has actual signal
+        if (pcmHasSignal) {
+          sendAudio(pcmData);
+        } else {
+          console.warn('[VoiceActivity] Skipping PCM chunk with no signal (max < 10/32768)');
+        }
       };
 
       // Connect audio nodes
       source.connect(processor);
       processor.connect(audioContext.destination);
+
+      // Tell the backend that a new utterance has started so it can
+      // initialise any STT / VAD state.
+      sendMessage({ type: 'user_started_speaking' });
 
       // Update both state and ref
       isRecordingRef.current = true;
@@ -498,6 +612,10 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
         mediaStreamRef.current = null;
       }
+
+      // Tell the backend that the current utterance has finished so
+      // Deepgram can finalize and emit a final transcription.
+      sendMessage({ type: 'user_stopped_speaking' });
 
       // Update both state and ref
       isRecordingRef.current = false;
