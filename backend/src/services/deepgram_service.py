@@ -54,9 +54,14 @@ class DeepgramSTTService:
 
         logger.info(f"Creating Deepgram STT service with params: {params}")
 
+        # Disable audio passthrough so that only synthesized TTS audio is sent
+        # back to the client. Without this, the raw microphone audio is pushed
+        # downstream and echoed back to the WebSocket, which is why the user
+        # was hearing themselves instead of just Jarvis.
         self._service = PipecatDeepgramSTT(
             api_key=self.api_key,
-            **params
+            audio_passthrough=False,
+            **params,
         )
 
         return self._service

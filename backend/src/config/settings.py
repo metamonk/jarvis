@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     BACKEND_HOST: str = "0.0.0.0"
 
+    # Server Configuration (for FastAPI)
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+    ENVIRONMENT: str = "development"
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
     # Database Configuration
     DATABASE_URL: Optional[str] = None
     REDIS_URL: Optional[str] = None
@@ -34,6 +40,7 @@ class Settings(BaseSettings):
     # Development Flags
     NODE_ENV: str = "development"
     DEBUG: bool = False
+    LOG_LEVEL: str = "INFO"
 
     class Config:
         env_file = ".env"

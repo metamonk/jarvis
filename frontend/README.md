@@ -85,7 +85,7 @@ frontend/
 
 Create a `.env` file:
 ```
-VITE_WS_URL=ws://localhost:8000/ws
+VITE_WS_URL=ws://localhost:8001/ws
 VITE_API_KEY=your_api_key_here
 ```
 

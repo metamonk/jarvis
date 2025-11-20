@@ -1,27 +1,14 @@
 """Pipecat voice pipeline orchestrator for Jarvis."""
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineTask
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.processors.aggregators.llm_response import (
-    LLMAssistantResponseAggregator,
-    LLMUserResponseAggregator
-)
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.frames.frames import (
-    Frame,
-    AudioRawFrame,
-    TextFrame,
-    TranscriptionFrame,
-    LLMMessagesFrame,
-    EndFrame
-)
-from pipecat.transports.base_transport import BaseTransport
-
-from .services import DeepgramSTTService, OpenAILLMService, ElevenLabsTTSService
-from .config.settings import settings
-from loguru import logger
 from typing import Optional, List, Dict, Any
-import asyncio
+
+import httpx
+from loguru import logger
+from pipecat.frames.frames import EndFrame, TranscriptionFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineTask
+from .config.settings import settings
+from .services import DeepgramSTTService, OpenAILLMService
 
 
 class JarvisPipeline:
@@ -50,9 +37,6 @@ class JarvisPipeline:
         self.llm_service = OpenAILLMService(
             api_key=settings.OPENAI_API_KEY
         )
-        self.tts_service = ElevenLabsTTSService(
-            api_key=settings.ELEVENLABS_API_KEY
-        )
 
         # Configuration
         self.voice_id = voice_id
@@ -62,6 +46,10 @@ class JarvisPipeline:
         self._pipeline: Optional[Pipeline] = None
         self._task: Optional[PipelineTask] = None
         self._runner: Optional[PipelineRunner] = None
+
+        # Buffer for accumulating the current assistant response text so we can
+        # synthesize it via ElevenLabs once the LLM response is complete.
+        self._current_tts_text: str = ""
 
         logger.info("Jarvis Pipeline initialized")
 
@@ -74,60 +62,179 @@ class JarvisPipeline:
             "Always be professional and helpful."
         )
 
-    async def setup(self, transport: BaseTransport):
+    async def setup(self, transport):
         """
         Set up the pipeline with all components.
 
         Args:
             transport: Transport layer for audio I/O
         """
+        from src.transport import WebSocketTransport  # avoid circular import in tools/tests
+
         logger.info("Setting up Jarvis pipeline...")
+
+        if not isinstance(transport, WebSocketTransport):
+            raise TypeError(
+                "JarvisPipeline.setup expects a WebSocketTransport instance for audio I/O."
+            )
 
         # Create service instances
         stt = self.stt_service.create_service(
             model="nova-2",
             language="en-US",
             smart_format=True,
-            interim_results=True
+            interim_results=True,
         )
-
-        llm = self.llm_service.create_service(
+        # Create the underlying OpenAI service used by our wrapper. We won't add
+        # this processor to the Pipecat pipeline; instead we call the wrapper's
+        # high-level `generate_response` helper when we receive finalized STT
+        # transcriptions.
+        self.llm_service.create_service(
             model="gpt-4-turbo-preview",
             temperature=0.7,
-            max_tokens=1024
-        )
-
-        tts = self.tts_service.create_service(
-            voice_id=self.voice_id,
-            model="eleven_turbo_v2_5",
-            stability=0.5,
-            similarity_boost=0.75,
-            optimize_streaming_latency=3
+            max_tokens=1024,
         )
 
         # Set system prompt
         self.llm_service.set_system_prompt(self.system_prompt)
 
-        # Create aggregators
-        user_aggregator = LLMUserResponseAggregator()
-        assistant_aggregator = LLMAssistantResponseAggregator()
+        # Observe STT output frames so we can trigger LLM + TTS when a
+        # transcription is ready.
+        @stt.event_handler("on_after_process_frame")
+        async def _stt_after(stt_proc, frame):
+            frame_type = type(frame).__name__
 
-        # Build pipeline
-        # Audio → STT → User Aggregator → LLM → Assistant Aggregator → TTS → Audio
-        self._pipeline = Pipeline([
-            transport.input(),     # Audio input
-            stt,                   # Speech-to-Text
-            user_aggregator,       # Aggregate user transcription
-            llm,                   # Language Model
-            assistant_aggregator,  # Aggregate LLM response
-            tts,                   # Text-to-Speech
-            transport.output(),    # Audio output
-        ])
+            if isinstance(frame, TranscriptionFrame):
+                text = (getattr(frame, "text", "") or "").strip()
+                is_final = getattr(frame, "is_final", True)
+
+                if not text:
+                    logger.debug(
+                        f"Deepgram STT produced TranscriptionFrame with empty text "
+                        f"(final={is_final})"
+                    )
+                    return
+
+                logger.info(
+                    f"Deepgram STT transcription (final={is_final}): [{text}]"
+                )
+
+                # For now we only respond to final transcriptions to avoid
+                # generating multiple replies for interim results. If the field
+                # doesn't exist, we treat the frame as final.
+                if not is_final:
+                    return
+
+                try:
+                    logger.info("Generating LLM response for transcribed speech")
+                    response_text = await self.llm_service.generate_response(text)
+                    logger.info(f"LLM response for speech: [{response_text}]")
+                    await self._speak_with_elevenlabs(response_text, transport)
+                except Exception as e:
+                    logger.error(f"Error handling STT transcription frame: {e}")
+            else:
+                logger.debug(f"STT downstream non-transcription frame: {frame_type}")
+
+        # Build core pipeline: Audio → STT
+        # LLM + TTS are handled out-of-band in the STT event handler above.
+        self._pipeline = Pipeline(
+            [
+                stt,  # Speech-to-Text
+            ]
+        )
 
         # Create task
         self._task = PipelineTask(self._pipeline)
 
+        # Attach the WebSocket transport to the task so it can inject audio frames.
+        await transport.setup(self._task)
+
+        @self._task.event_handler("on_frame_reached_downstream")
+        async def _on_downstream(task, frame):
+            frame_type = type(frame).__name__
+
+            if isinstance(frame, TranscriptionFrame):
+                text = (getattr(frame, "text", "") or "").strip()
+                is_final = getattr(frame, "is_final", True)
+
+                if not text:
+                    logger.debug(
+                        f"Received TranscriptionFrame with empty text (final={is_final})"
+                    )
+                    return
+
+                logger.info(
+                    f"Received transcription from STT (final={is_final}): [{text}]"
+                )
+
+                # Only trigger LLM + TTS on final transcriptions to avoid
+                # responding to interim results.
+                if not is_final:
+                    return
+
+                try:
+                    logger.info("Generating LLM response for transcribed speech")
+                    response_text = await self.llm_service.generate_response(text)
+                    logger.info(f"LLM response for speech: [{response_text}]")
+                    await self._speak_with_elevenlabs(response_text, transport)
+                except Exception as e:
+                    logger.error(f"Error handling transcription frame: {e}")
+            else:
+                logger.debug(f"Pipeline downstream non-transcription frame: {frame_type}")
+
         logger.info("Pipeline setup complete")
+
+    async def _speak_with_elevenlabs(self, text: str, transport) -> None:
+        """
+        Use ElevenLabs HTTP API to synthesize speech for the given text and
+        stream raw PCM audio bytes back to the browser via the WebSocket
+        transport.
+
+        This bypasses Pipecat's built‑in ElevenLabs processor and gives us full
+        control over the audio format so it matches what the frontend expects
+        (16‑bit PCM at 16kHz, mono).
+        """
+        api_key = settings.ELEVENLABS_API_KEY
+        if not api_key:
+            logger.error("ELEVENLABS_API_KEY is not configured; cannot synthesize speech")
+            return
+
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream"
+
+        headers = {
+            "xi-api-key": api_key,
+            "Accept": "application/octet-stream",
+            "Content-Type": "application/json",
+        }
+
+        payload: Dict[str, Any] = {
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",
+            # Request 16kHz 16‑bit PCM, which the frontend decodes directly.
+            "output_format": "pcm_16000",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+                "style": 0.0,
+                "use_speaker_boost": True,
+            },
+        }
+
+        logger.info("Calling ElevenLabs TTS HTTP API for synthesis")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+
+                async for chunk in resp.aiter_bytes():
+                    if not chunk:
+                        continue
+
+                    logger.info(
+                        "Streaming ElevenLabs audio chunk to WebSocket: "
+                        f"{len(chunk)} bytes"
+                    )
+                    await transport.websocket.send_bytes(chunk)
 
     async def run(self):
         """Run the pipeline."""
@@ -183,6 +290,5 @@ class JarvisPipeline:
         return (
             self.stt_service.is_ready and
             self.llm_service.is_ready and
-            self.tts_service.is_ready and
             self._pipeline is not None
         )
