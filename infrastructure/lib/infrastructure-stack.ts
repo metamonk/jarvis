@@ -234,7 +234,7 @@ export class InfrastructureStack extends cdk.Stack {
     });
 
     container.addPortMappings({
-      containerPort: 8000,
+      containerPort: 8080,
       protocol: ecs.Protocol.TCP,
     });
 
@@ -280,7 +280,7 @@ export class InfrastructureStack extends cdk.Stack {
 
     // Target group for load balancer
     const targetGroup = listener.addTargets('JarvisTargetGroup', {
-      port: 8000,
+      port: 8080,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targets: [service],
       healthCheck: {

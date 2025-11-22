@@ -94,10 +94,10 @@ pip install -r requirements.txt
 python test_setup.py
 
 # Run development server
-uvicorn jarvis_pipeline:app --reload --host 0.0.0.0 --port 8000
+uvicorn jarvis_pipeline:app --reload --host 0.0.0.0 --port 8080
 ```
 
-Backend will be available at: `http://localhost:8000`
+Backend will be available at: `http://localhost:8080`
 
 ### Frontend Setup
 

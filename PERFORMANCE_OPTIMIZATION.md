@@ -184,11 +184,11 @@ Load testing framework to simulate realistic user patterns:
 **Run load tests:**
 ```bash
 # Interactive mode with web UI
-locust -f tests/performance/load_test.py --host http://localhost:8000
+locust -f tests/performance/load_test.py --host http://localhost:8080
 
 # Headless mode with report
 locust -f tests/performance/load_test.py \
-  --host http://localhost:8000 \
+  --host http://localhost:8080 \
   --users 50 \
   --spawn-rate 5 \
   --run-time 5m \

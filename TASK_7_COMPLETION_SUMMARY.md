@@ -215,11 +215,11 @@ cd backend
 
 ```bash
 # Start backend
-uvicorn src.main:app --host 0.0.0.0 --port 8000
+uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 # Run load test (in another terminal)
 locust -f tests/performance/load_test.py \
-  --host http://localhost:8000 \
+  --host http://localhost:8080 \
   --users 50 \
   --spawn-rate 5 \
   --run-time 5m \

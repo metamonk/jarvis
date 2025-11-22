@@ -33,7 +33,13 @@ class OpenAILLMService:
         self.api_key = api_key
         self._service = None
         self._conversation_history: List[Dict[str, str]] = []
-        logger.info("OpenAI LLM Service initialized")
+        self._client = None  # Initialize as None, will be created on first use
+
+        # Validate API key format
+        if not api_key or not api_key.startswith(('sk-', 'sk-proj-')):
+            logger.warning(f"⚠️ OpenAI API key may be invalid. Key prefix: {api_key[:10] if api_key else 'None'}")
+
+        logger.info(f"OpenAI LLM Service initialized with API key: {api_key[:20]}...")
 
     def create_service(
         self,
@@ -62,6 +68,11 @@ class OpenAILLMService:
         }
 
         logger.info(f"Creating OpenAI LLM service with params: {params}")
+
+        # Store parameters for direct API calls
+        self._model = model
+        self._temperature = temperature
+        self._max_tokens = max_tokens
 
         self._service = PipecatOpenAILLM(
             api_key=self.api_key,
@@ -164,19 +175,60 @@ class OpenAILLMService:
         Returns:
             str: Assistant's response text
         """
+        logger.info(f"🔵 generate_response called with: {user_message}")
         self.add_user_message(user_message)
 
-        response_text = ""
-        async for frame in self.process_messages():
-            # Handle both TextFrame and LLMTextFrame
-            if isinstance(frame, (TextFrame, LLMTextFrame)):
-                response_text += frame.text
-            elif isinstance(frame, LLMFullResponseEndFrame):
-                # End of response
-                break
+        # Use direct OpenAI API call instead of Pipecat frames
+        try:
+            logger.info("📞 Attempting to import OpenAI...")
+            import openai
+            logger.info("✅ OpenAI imported successfully")
 
-        self.add_assistant_message(response_text)
-        return response_text
+            # Initialize OpenAI client if not already done
+            if self._client is None:
+                logger.info(f"🔑 Initializing OpenAI client with API key: {self.api_key[:10]}...")
+                from openai import AsyncOpenAI
+                self._client = AsyncOpenAI(api_key=self.api_key)
+                logger.info("✅ OpenAI client initialized")
+
+            logger.info(f"📤 Sending request to OpenAI API with {len(self._conversation_history)} messages...")
+            logger.debug(f"Model: {self._model or 'gpt-4-turbo-preview'}")
+            logger.debug(f"Temperature: {self._temperature or 0.7}")
+            logger.debug(f"Max tokens: {self._max_tokens or 1024}")
+
+            # Generate response using direct API
+            response = await self._client.chat.completions.create(
+                model=self._model or "gpt-4-turbo-preview",
+                messages=self._conversation_history,
+                temperature=self._temperature or 0.7,
+                max_tokens=self._max_tokens or 1024,
+                stream=False
+            )
+            logger.info("✅ Received response from OpenAI API")
+
+            response_text = response.choices[0].message.content
+            logger.info(f"📝 Response text: {response_text[:100]}...")
+            self.add_assistant_message(response_text)
+            return response_text
+
+        except Exception as e:
+            logger.error(f"❌ Error generating response: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {str(e)}")
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            # Fallback to Pipecat method if direct API fails
+            response_text = ""
+            async for frame in self.process_messages():
+                # Handle both TextFrame and LLMTextFrame
+                if isinstance(frame, (TextFrame, LLMTextFrame)):
+                    response_text += frame.text
+                elif isinstance(frame, LLMFullResponseEndFrame):
+                    # End of response
+                    break
+
+            self.add_assistant_message(response_text)
+            return response_text
 
     def clear_history(self, keep_system_prompt: bool = True):
         """

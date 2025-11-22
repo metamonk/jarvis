@@ -22,7 +22,13 @@ from typing import Optional
 
 from fastapi import WebSocket
 from loguru import logger
-from pipecat.frames.frames import AudioRawFrame, Frame, TTSAudioRawFrame
+from pipecat.frames.frames import (
+    AudioRawFrame,
+    Frame,
+    TTSAudioRawFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from pipecat.pipeline.task import PipelineTask
 
 
@@ -185,6 +191,45 @@ class WebSocketTransport:
         # Put audio data in input queue to be converted to frames.
         await self._input_queue.put(audio_data)
         logger.info("Audio data queued for processing")
+
+    async def user_started_speaking(self):
+        """
+        Signal to the pipeline that the user has started speaking.
+
+        This enqueues a ``UserStartedSpeakingFrame`` which Deepgram can use to
+        start metrics and, when VAD is enabled, drive utterance segmentation.
+        """
+        if not self._task:
+            logger.warning(
+                "WebSocketTransport.user_started_speaking called before setup; "
+                "dropping frame"
+            )
+            return
+
+        frame = UserStartedSpeakingFrame(emulated=True)
+        logger.debug("Queueing UserStartedSpeakingFrame into pipeline")
+        await self._task.queue_frame(frame)
+
+    async def user_stopped_speaking(self):
+        """
+        Signal to the pipeline that the user has stopped speaking.
+
+        This enqueues a ``UserStoppedSpeakingFrame``. Deepgram's STT service
+        listens for this frame and calls ``finalize()`` on its WebSocket
+        connection, which in turn causes final ``TranscriptionFrame`` results
+        to be emitted. Those final transcriptions are what we feed into the
+        LLM and TTS.
+        """
+        if not self._task:
+            logger.warning(
+                "WebSocketTransport.user_stopped_speaking called before setup; "
+                "dropping frame"
+            )
+            return
+
+        frame = UserStoppedSpeakingFrame(emulated=True)
+        logger.debug("Queueing UserStoppedSpeakingFrame into pipeline (finalize STT)")
+        await self._task.queue_frame(frame)
 
     async def _input_task_handler(self):
         """

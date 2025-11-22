@@ -46,12 +46,12 @@ COMPANY_API_KEY=your_key_here
 
 Development mode:
 ```bash
-uvicorn jarvis_pipeline:app --reload --host 0.0.0.0 --port 8000
+uvicorn jarvis_pipeline:app --reload --host 0.0.0.0 --port 8080
 ```
 
 Production mode:
 ```bash
-uvicorn jarvis_pipeline:app --host 0.0.0.0 --port 8000
+uvicorn jarvis_pipeline:app --host 0.0.0.0 --port 8080
 ```
 
 ### Testing
@@ -70,7 +70,7 @@ docker build -t jarvis-backend .
 
 Run:
 ```bash
-docker run -p 8000:8000 --env-file .env jarvis-backend
+docker run -p 8080:8080 --env-file .env jarvis-backend
 ```
 
 ## API Endpoints
@@ -107,4 +107,4 @@ backend/
 
 **API key errors**: Verify all required API keys are set in `.env` file
 
-**Port conflicts**: Change the port in the uvicorn command if 8000 is in use
+**Port conflicts**: Change the port in the uvicorn command if 8080 is in use

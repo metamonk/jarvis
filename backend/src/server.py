@@ -172,9 +172,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Handle different message types
                 if "bytes" in message:
-                    # Binary audio data - send to transport
+                    # Binary audio data
                     audio_data = message["bytes"]
-                    await transport.send_audio(audio_data)
+
+                    # If using direct Deepgram, process audio directly
+                    if hasattr(pipeline, 'use_direct_deepgram') and pipeline.use_direct_deepgram:
+                        await pipeline.process_audio(audio_data)
+                    else:
+                        # Otherwise use transport
+                        await transport.send_audio(audio_data)
 
                 elif "text" in message:
                     # Text control message
@@ -184,6 +190,25 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     if msg_type == "ping":
                         await websocket.send_json({"type": "pong"})
+
+                    elif msg_type == "user_started_speaking":
+                        # Frontend has begun capturing audio for a new utterance.
+                        # Notify the pipeline so Deepgram can start any internal
+                        # metrics or VAD flows.
+                        if transport:
+                            await transport.user_started_speaking()
+
+                    elif msg_type == "user_stopped_speaking":
+                        logger.info("📍 Received user_stopped_speaking message from frontend")
+                        # Frontend has finished capturing audio for an utterance.
+                        # If using direct Deepgram, finalize the speech
+                        if hasattr(pipeline, 'use_direct_deepgram') and pipeline.use_direct_deepgram:
+                            logger.info("🎯 Using direct Deepgram - calling finalize_speech")
+                            await pipeline.finalize_speech()
+                        elif transport:
+                            # Otherwise notify the transport/pipeline
+                            logger.info("Using transport - calling user_stopped_speaking")
+                            await transport.user_stopped_speaking()
 
                     elif msg_type == "clear":
                         # Clear conversation history
@@ -202,6 +227,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "type": "prompt_updated",
                                 "message": "System prompt updated"
                             })
+
+                    elif msg_type == "user_stopped_speaking":
+                        # Frontend has stopped sending audio for the current
+                        # utterance. Tell Deepgram to finalize so it emits a
+                        # final TranscriptionFrame that we can feed into the
+                        # LLM and TTS.
+                        if transport:
+                            await transport.user_stopped_speaking()
 
                     else:
                         logger.warning(f"Unknown message type: {msg_type}")

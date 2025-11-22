@@ -337,7 +337,7 @@ npm run dev
 
 **Test 4: WebSocket URL Configuration**
 ```
-1. Input field shows default: ws://localhost:8000/ws
+1. Input field shows default: ws://localhost:8080/ws
 2. Can be edited
 3. Changes persist during session
 ```
@@ -386,7 +386,7 @@ npm run dev
 ```
 1. Click/hold PTT button
 2. Browser requests microphone access (first time)
-3. WebSocket attempts connection to ws://localhost:8000/ws
+3. WebSocket attempts connection to ws://localhost:8080/ws
 4. Connection fails (expected - no backend running yet)
 5. Status shows "Connection Failed" or "Error"
 6. Console shows WebSocket error (expected)
