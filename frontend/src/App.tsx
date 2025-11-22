@@ -6,7 +6,7 @@ import AudioVisualizer from './components/AudioVisualizer';
 import './App.css';
 
 function App() {
-  const [wsUrl, setWsUrl] = useState('ws://localhost:8001/ws');
+  const [wsUrl, setWsUrl] = useState('ws://localhost:8080/ws');
   const [audioLevel, setAudioLevel] = useState(0);
 
   const {
@@ -98,7 +98,7 @@ function App() {
               onChange={(e) => setWsUrl(e.target.value)}
               disabled={isConnected}
               className="url-input"
-              placeholder="ws://localhost:8001/ws"
+              placeholder="ws://localhost:8080/ws"
             />
             <button
               onClick={handleConnectToggle}

@@ -269,6 +269,35 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
 
       // If not currently playing, start playback
       if (!isPlayingRef.current) {
+        // Stop recording to prevent audio feedback loop
+        if (isRecordingRef.current) {
+          console.log('[VoiceActivity] Stopping recording to prevent feedback during playback');
+
+          // Cleanup audio nodes
+          if (scriptProcessorRef.current) {
+            scriptProcessorRef.current.onaudioprocess = null;
+            scriptProcessorRef.current.disconnect();
+            scriptProcessorRef.current = null;
+          }
+          if (sourceNodeRef.current) {
+            sourceNodeRef.current.disconnect();
+            sourceNodeRef.current = null;
+          }
+
+          // Stop media stream
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+            mediaStreamRef.current = null;
+          }
+
+          // Notify backend
+          sendMessage({ type: 'user_stopped_speaking' });
+
+          // Update state
+          isRecordingRef.current = false;
+          setIsRecording(false);
+        }
+
         isPlayingRef.current = true;
         setState('speaking');
         nextStartTimeRef.current = audioContext.currentTime + 0.05; // Small initial delay
@@ -280,7 +309,7 @@ export function useVoiceActivity(options: UseVoiceActivityOptions = {}): UseVoic
       console.error('[VoiceActivity] Failed to process audio', err);
       handleError(new Error(`Failed to process audio: ${err}`));
     }
-  }, [initAudioContext, processAudioQueue, onAudioReceived, handleError]);
+  }, [initAudioContext, processAudioQueue, onAudioReceived, handleError, sendMessage]);
 
   /**
    * Handle WebSocket messages

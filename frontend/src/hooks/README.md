@@ -33,7 +33,7 @@ function VoiceChat() {
     stopRecording,
     clearConversation,
   } = useVoiceActivity({
-    wsUrl: 'ws://localhost:8001/ws',
+    wsUrl: 'ws://localhost:8080/ws',
     autoConnect: true,
     onReady: () => console.log('Ready to talk!'),
     onError: (err) => console.error('Error:', err),
@@ -73,7 +73,7 @@ import { useWebSocket } from './hooks';
 
 function CustomWebSocket() {
   const { isConnected, send, sendJSON } = useWebSocket({
-    url: 'ws://localhost:8001/ws',
+    url: 'ws://localhost:8080/ws',
     autoConnect: true,
     onMessage: (event) => {
       console.log('Received:', event.data);
